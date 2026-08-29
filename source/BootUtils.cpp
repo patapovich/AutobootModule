@@ -4,6 +4,8 @@
 #include "logger.h"
 #include <codecvt>
 #include <coreinit/filesystem_fsa.h>
+#include <coreinit/thread.h>
+#include <coreinit/time.h>
 #include <locale>
 #include <malloc.h>
 #include <memory>
@@ -86,18 +88,25 @@ void handleAccountSelection() {
     nn::act::Finalize();
 }
 
-static void launchvWiiTitle(uint64_t titleId) {
-    // we need to init kpad for cmpt
-    KPADInit();
+// Exported by nn_cmpt.rpl but not declared in wut's cmpt.h; the Wii U Menu
+// calls this before launching vWii titles to signal GamePad support.
+extern "C" int32_t CMPTAcctSetDrcCtrlEnabled(int32_t enabled);
 
-    // Try to find a screen type that works
-    CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_BOTH);
-    if (CMPTCheckScreenState() < 0) {
-        CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_DRC);
-        if (CMPTCheckScreenState() < 0) {
-            CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
-        }
+// Prepare the compat (vWii) subsystem so a launch works with the GamePad
+// powered off. On autoboot this runs much earlier than a manual boot-menu
+// selection, so wait for the subsystem to report readiness before any vWii
+// operation (title lookup or launch), see AutobootModule#67.
+static void prepareVWiiLaunch() {
+    KPADInit();
+    CMPTAcctSetDrcCtrlEnabled(0);
+    CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
+    for (int i = 0; i < 50 && CMPTCheckScreenState() < 0; i++) {
+        OSSleepTicks(OSMillisecondsToTicks(100));
     }
+}
+
+static void launchvWiiTitle(uint64_t titleId) {
+    prepareVWiiLaunch();
 
     uint32_t dataSize = 0;
     CMPTGetDataSize(&dataSize);
@@ -152,7 +161,15 @@ uint64_t getVWiiHBLTitleId() {
 }
 
 void bootHomebrewChannel() {
+    // Prepare the compat subsystem BEFORE the slccmpt title lookup: the
+    // lookup and the launch both race against subsystem readiness on autoboot.
+    prepareVWiiLaunch();
     uint64_t titleId = getVWiiHBLTitleId();
+    if (titleId == 0) {
+        // HBC lookup failed; try the standard vWii HBC title id directly
+        // instead of falling back to the System Menu.
+        titleId = 0x000100014C554C5AL; // 'LULZ'
+    }
     DEBUG_FUNCTION_LINE("Launching vWii title %016llx", titleId);
     launchvWiiTitle(titleId);
 }
