@@ -89,14 +89,9 @@ static void launchvWiiTitle(uint64_t titleId) {
     // we need to init kpad for cmpt
     KPADInit();
 
-    // Try to find a screen type that works
-    CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_BOTH);
-    if (CMPTCheckScreenState() < 0) {
-        CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_DRC);
-        if (CMPTCheckScreenState() < 0) {
-            CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
-        }
-    }
+    // Force TV-only output so autoboot works with the GamePad powered off,
+    // see https://github.com/wiiu-env/AutobootModule/issues/67
+    CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
 
     uint32_t dataSize = 0;
     CMPTGetDataSize(&dataSize);
