@@ -85,12 +85,18 @@ void handleAccountSelection() {
     nn::act::Finalize();
 }
 
+// Exported by nn_cmpt.rpl but not declared in wut's cmpt.h; the Wii U Menu
+// calls this before launching vWii titles to signal GamePad support.
+extern "C" int32_t CMPTAcctSetDrcCtrlEnabled(int32_t enabled);
+
 static void launchvWiiTitle(uint64_t titleId) {
     // we need to init kpad for cmpt
     KPADInit();
 
-    // Force TV-only output so autoboot works with the GamePad powered off,
+    // Disable the GamePad and force TV-only output so autoboot works with
+    // the GamePad powered off,
     // see https://github.com/wiiu-env/AutobootModule/issues/67
+    CMPTAcctSetDrcCtrlEnabled(0);
     CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
 
     uint32_t dataSize = 0;
