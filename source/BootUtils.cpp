@@ -8,6 +8,8 @@
 #include <coreinit/screen.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
+#include <cstdarg>
+#include <cstdio>
 #include <locale>
 #include <malloc.h>
 #include <memory>
@@ -94,6 +96,21 @@ void handleAccountSelection() {
 // calls this before launching vWii titles to signal GamePad support.
 extern "C" int32_t CMPTAcctSetDrcCtrlEnabled(int32_t enabled);
 
+// Append a line to a debug log on the SD card so launch failures can be
+// inspected on a PC even when nothing is visible on screen.
+static void debugLog(const char *fmt, ...) {
+    FILE *f = fopen("fs:/vol/external01/wiiu/autoboot_debug.txt", "a");
+    if (!f) {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(f, fmt, args);
+    va_end(args);
+    fprintf(f, "\n");
+    fclose(f);
+}
+
 // Diagnostic stage markers for the padless vWii launch: fill the whole TV
 // screen with a solid color so the last stage reached stays visible even if
 // a later call blocks forever. Draws into both flip buffers so the color
@@ -131,18 +148,25 @@ static bool prepareVWiiLaunch() {
     // always done this by the time it launches vWii titles.
     nn::act::Initialize();
     nn::act::SlotNo defaultSlot = nn::act::GetDefaultAccount();
+    bool accountLoaded          = false;
     if (defaultSlot) {
-        nn::act::LoadConsoleAccount(defaultSlot, 0, nullptr, false);
+        accountLoaded = nn::act::LoadConsoleAccount(defaultSlot, 0, nullptr, false).IsSuccess();
     }
     showStageColor(0xFF00FFFF); // MAGENTA: default account loaded
 
-    bool ready = false;
+    bool ready     = false;
+    int32_t rcDrc  = -999;
+    int32_t rcScr  = -999;
+    int32_t rcChk  = -999;
+    int usedPasses = 0;
     for (int i = 0; i < 300; i++) {
         // YELLOW blink (1 s cycle): poll loop alive; solid = a call blocks
         showStageColor((i / 10) % 2 ? 0xFFFF00FF : 0x806000FF);
-        CMPTAcctSetDrcCtrlEnabled(0);
-        CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
-        if (CMPTCheckScreenState() >= 0) {
+        rcDrc      = CMPTAcctSetDrcCtrlEnabled(0);
+        rcScr      = CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
+        rcChk      = CMPTCheckScreenState();
+        usedPasses = i + 1;
+        if (rcChk >= 0) {
             showStageColor(0x00FF00FF); // GREEN: subsystem ready
             ready = true;
             break;
@@ -150,6 +174,8 @@ static bool prepareVWiiLaunch() {
         OSSleepTicks(OSMillisecondsToTicks(100));
     }
     nn::act::Finalize();
+    debugLog("prepare: slot=%d loaded=%d passes=%d rcDrc=%d rcScr=%d rcChk=%d ready=%d",
+             defaultSlot, accountLoaded, usedPasses, rcDrc, rcScr, rcChk, ready);
     if (!ready) {
         DEBUG_FUNCTION_LINE_ERR("Compat subsystem not ready after 30s");
         showStageColor(0xFF0000FF); // RED: timeout, falling back to Wii U Menu
@@ -171,12 +197,24 @@ static void launchvWiiTitle(uint64_t titleId) {
 
     void *dataBuffer = memalign(0x40, dataSize);
 
-    showStageColor(0xFFFFFFFF); // WHITE: about to call CMPTLaunch*
-    int32_t rc;
-    if (titleId == 0) {
-        rc = CMPTLaunchMenu(dataBuffer, dataSize);
-    } else {
-        rc = CMPTLaunchTitle(dataBuffer, dataSize, titleId);
+    // Retry the launch for up to 15 s: early in boot it can be refused
+    // transiently while the DRC state settles. WHITE/PURPLE blink = retrying.
+    int32_t rc = -999;
+    for (int attempt = 0; attempt < 15; attempt++) {
+        showStageColor(attempt % 2 ? 0x8000FFFF : 0xFFFFFFFF);
+        CMPTAcctSetDrcCtrlEnabled(0);
+        CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
+        if (titleId == 0) {
+            rc = CMPTLaunchMenu(dataBuffer, dataSize);
+        } else {
+            rc = CMPTLaunchTitle(dataBuffer, dataSize, titleId);
+        }
+        debugLog("launch: attempt=%d rc=%d (0x%08x) titleId=%08x%08x dataSize=%u",
+                 attempt, rc, (uint32_t) rc, (uint32_t) (titleId >> 32), (uint32_t) titleId, dataSize);
+        if (rc == 0) {
+            break;
+        }
+        OSSleepTicks(OSMillisecondsToTicks(1000));
     }
     if (rc != 0) {
         // Launch refused — show ORANGE, then fall back to the Wii U Menu
