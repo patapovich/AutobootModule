@@ -124,10 +124,19 @@ static void showStageColor(uint32_t color) {
 static bool prepareVWiiLaunch() {
     showStageColor(0x0000FFFF); // BLUE: entered prepareVWiiLaunch
     KPADInit();
-    showStageColor(0xFF00FFFF); // MAGENTA: KPADInit returned
-    CMPTAcctSetDrcCtrlEnabled(0);
-    showStageColor(0x00FFFFFF); // CYAN: first DrcCtrlEnabled returned
-    CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
+
+    // The CMPTAcct* settings are account-scoped: without a loaded console
+    // account they can apply to nothing and the vWii transition still waits
+    // for the GamePad. Load the default account first — the Wii U Menu has
+    // always done this by the time it launches vWii titles.
+    nn::act::Initialize();
+    nn::act::SlotNo defaultSlot = nn::act::GetDefaultAccount();
+    if (defaultSlot) {
+        nn::act::LoadConsoleAccount(defaultSlot, 0, nullptr, false);
+    }
+    showStageColor(0xFF00FFFF); // MAGENTA: default account loaded
+
+    bool ready = false;
     for (int i = 0; i < 300; i++) {
         // YELLOW blink (1 s cycle): poll loop alive; solid = a call blocks
         showStageColor((i / 10) % 2 ? 0xFFFF00FF : 0x806000FF);
@@ -135,14 +144,18 @@ static bool prepareVWiiLaunch() {
         CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
         if (CMPTCheckScreenState() >= 0) {
             showStageColor(0x00FF00FF); // GREEN: subsystem ready
-            return true;
+            ready = true;
+            break;
         }
         OSSleepTicks(OSMillisecondsToTicks(100));
     }
-    DEBUG_FUNCTION_LINE_ERR("Compat subsystem not ready after 30s");
-    showStageColor(0xFF0000FF); // RED: timeout, falling back to Wii U Menu
-    OSSleepTicks(OSMillisecondsToTicks(2000));
-    return false;
+    nn::act::Finalize();
+    if (!ready) {
+        DEBUG_FUNCTION_LINE_ERR("Compat subsystem not ready after 30s");
+        showStageColor(0xFF0000FF); // RED: timeout, falling back to Wii U Menu
+        OSSleepTicks(OSMillisecondsToTicks(2000));
+    }
+    return ready;
 }
 
 static void launchvWiiTitle(uint64_t titleId) {
@@ -159,12 +172,23 @@ static void launchvWiiTitle(uint64_t titleId) {
     void *dataBuffer = memalign(0x40, dataSize);
 
     showStageColor(0xFFFFFFFF); // WHITE: about to call CMPTLaunch*
+    int32_t rc;
     if (titleId == 0) {
-        CMPTLaunchMenu(dataBuffer, dataSize);
+        rc = CMPTLaunchMenu(dataBuffer, dataSize);
     } else {
-        CMPTLaunchTitle(dataBuffer, dataSize, titleId);
+        rc = CMPTLaunchTitle(dataBuffer, dataSize, titleId);
     }
-    // GREY: CMPTLaunch* returned — transition to vWii happens after this
+    if (rc != 0) {
+        // Launch refused — show ORANGE, then fall back to the Wii U Menu
+        // instead of sitting on a black screen.
+        DEBUG_FUNCTION_LINE_ERR("CMPTLaunch* failed: %d", rc);
+        showStageColor(0xFF8000FF);
+        OSSleepTicks(OSMillisecondsToTicks(2000));
+        free(dataBuffer);
+        bootWiiUMenu();
+        return;
+    }
+    // GREY: CMPTLaunch* accepted — transition to vWii happens after this
     showStageColor(0x808080FF);
 
     free(dataBuffer);
