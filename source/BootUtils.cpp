@@ -198,17 +198,6 @@ static void launchvWiiTitle(uint64_t titleId) {
 
     void *dataBuffer = memalign(0x40, dataSize);
 
-    // Explicitly shut down the DRC before launching: with a dead/off GamePad
-    // the compat launch is refused (-512 then -9) while the DRC state is
-    // undetermined. CCRSysDRCShutdown() settles it (harmless when no DRC is
-    // attached; with an attached DRC the screen turns off, which matches the
-    // forced TV-only vWii output anyway).
-    CCRSysInit();
-    int32_t attached = __CCRSysDRCIsAttached(0);
-    int32_t rcShut   = CCRSysDRCShutdown();
-    CCRSysExit();
-    debugLog("ccr: attached=%d rcShut=%d", attached, rcShut);
-
     // Retry the launch for up to 15 s: early in boot it can be refused
     // transiently while the DRC state settles. WHITE/PURPLE blink = retrying.
     int32_t rc = -999;
