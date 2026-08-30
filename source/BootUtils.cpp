@@ -1,7 +1,9 @@
 #include "BootUtils.h"
 #include "ACTAccountInfo.h"
+#include "DrawUtils.h"
 #include "MenuUtils.h"
 #include "logger.h"
+#include <coreinit/screen.h>
 #include <codecvt>
 #include <coreinit/filesystem_fsa.h>
 #include <coreinit/thread.h>
@@ -92,22 +94,54 @@ void handleAccountSelection() {
 // calls this before launching vWii titles to signal GamePad support.
 extern "C" int32_t CMPTAcctSetDrcCtrlEnabled(int32_t enabled);
 
+// Diagnostic stage markers for the padless vWii launch: fill the whole TV
+// screen with a solid color so the last stage reached stays visible even if
+// a later call blocks forever. Draws into both flip buffers so the color
+// survives until the next marker.
+static void showStageColor(uint32_t color) {
+    static void *screenBuffer = nullptr;
+    if (!screenBuffer) {
+        screenBuffer = DrawUtils::InitOSScreen();
+        if (!screenBuffer) {
+            return;
+        }
+        uint32_t tvSize  = OSScreenGetBufferSizeEx(SCREEN_TV);
+        uint32_t drcSize = OSScreenGetBufferSizeEx(SCREEN_DRC);
+        DrawUtils::initBuffers(screenBuffer, tvSize, (void *) ((uint32_t) screenBuffer + tvSize), drcSize);
+    }
+    for (int i = 0; i < 2; i++) {
+        DrawUtils::beginDraw();
+        DrawUtils::clear(Color(color));
+        DrawUtils::endDraw();
+    }
+}
+
 // Prepare the compat (vWii) subsystem so a launch works with the GamePad
 // powered off. On autoboot this runs much earlier than a manual boot-menu
 // selection: CMPTAcct* calls made before nn_cmpt is up can get lost, so
 // re-assert them on every poll pass and wait up to 30 s for a valid screen
 // state, see AutobootModule#67. Returns false if it never became ready.
 static bool prepareVWiiLaunch() {
+    showStageColor(0x0000FFFF); // BLUE: entered prepareVWiiLaunch
     KPADInit();
+    showStageColor(0xFF00FFFF); // MAGENTA: KPADInit returned
+    CMPTAcctSetDrcCtrlEnabled(0);
+    showStageColor(0x00FFFFFF); // CYAN: first DrcCtrlEnabled returned
+    CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
     for (int i = 0; i < 300; i++) {
+        // YELLOW blink (1 s cycle): poll loop alive; solid = a call blocks
+        showStageColor((i / 10) % 2 ? 0xFFFF00FF : 0x806000FF);
         CMPTAcctSetDrcCtrlEnabled(0);
         CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
         if (CMPTCheckScreenState() >= 0) {
+            showStageColor(0x00FF00FF); // GREEN: subsystem ready
             return true;
         }
         OSSleepTicks(OSMillisecondsToTicks(100));
     }
     DEBUG_FUNCTION_LINE_ERR("Compat subsystem not ready after 30s");
+    showStageColor(0xFF0000FF); // RED: timeout, falling back to Wii U Menu
+    OSSleepTicks(OSMillisecondsToTicks(2000));
     return false;
 }
 
@@ -124,11 +158,14 @@ static void launchvWiiTitle(uint64_t titleId) {
 
     void *dataBuffer = memalign(0x40, dataSize);
 
+    showStageColor(0xFFFFFFFF); // WHITE: about to call CMPTLaunch*
     if (titleId == 0) {
         CMPTLaunchMenu(dataBuffer, dataSize);
     } else {
         CMPTLaunchTitle(dataBuffer, dataSize, titleId);
     }
+    // GREY: CMPTLaunch* returned — transition to vWii happens after this
+    showStageColor(0x808080FF);
 
     free(dataBuffer);
 }
