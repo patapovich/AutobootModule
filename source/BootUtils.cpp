@@ -94,19 +94,30 @@ extern "C" int32_t CMPTAcctSetDrcCtrlEnabled(int32_t enabled);
 
 // Prepare the compat (vWii) subsystem so a launch works with the GamePad
 // powered off. On autoboot this runs much earlier than a manual boot-menu
-// selection, so wait for the subsystem to report readiness before any vWii
-// operation (title lookup or launch), see AutobootModule#67.
-static void prepareVWiiLaunch() {
+// selection: CMPTAcct* calls made before nn_cmpt is up can get lost, so
+// re-assert them on every poll pass and wait up to 30 s for a valid screen
+// state, see AutobootModule#67. Returns false if it never became ready.
+static bool prepareVWiiLaunch() {
     KPADInit();
-    CMPTAcctSetDrcCtrlEnabled(0);
-    CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
-    for (int i = 0; i < 50 && CMPTCheckScreenState() < 0; i++) {
+    for (int i = 0; i < 300; i++) {
+        CMPTAcctSetDrcCtrlEnabled(0);
+        CMPTAcctSetScreenType(CMPT_SCREEN_TYPE_TV);
+        if (CMPTCheckScreenState() >= 0) {
+            return true;
+        }
         OSSleepTicks(OSMillisecondsToTicks(100));
     }
+    DEBUG_FUNCTION_LINE_ERR("Compat subsystem not ready after 30s");
+    return false;
 }
 
 static void launchvWiiTitle(uint64_t titleId) {
-    prepareVWiiLaunch();
+    if (!prepareVWiiLaunch()) {
+        // Compat subsystem never became ready; boot the Wii U Menu instead of
+        // hanging on a black screen — vWii stays reachable from there.
+        bootWiiUMenu();
+        return;
+    }
 
     uint32_t dataSize = 0;
     CMPTGetDataSize(&dataSize);
@@ -163,7 +174,10 @@ uint64_t getVWiiHBLTitleId() {
 void bootHomebrewChannel() {
     // Prepare the compat subsystem BEFORE the slccmpt title lookup: the
     // lookup and the launch both race against subsystem readiness on autoboot.
-    prepareVWiiLaunch();
+    if (!prepareVWiiLaunch()) {
+        bootWiiUMenu();
+        return;
+    }
     uint64_t titleId = getVWiiHBLTitleId();
     if (titleId == 0) {
         // HBC lookup failed; try the standard vWii HBC title id directly

@@ -1,11 +1,14 @@
 name: CI-Release
 
+permissions:
+  contents: write
+
 on:
   push:
     branches:
       - main
       - era-hbc
-    
+
 jobs:
   clang-format:
     runs-on: ubuntu-22.04
