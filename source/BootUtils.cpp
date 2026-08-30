@@ -3,9 +3,9 @@
 #include "DrawUtils.h"
 #include "MenuUtils.h"
 #include "logger.h"
-#include <coreinit/screen.h>
 #include <codecvt>
 #include <coreinit/filesystem_fsa.h>
+#include <coreinit/screen.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
 #include <locale>
